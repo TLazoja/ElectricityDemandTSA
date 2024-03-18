@@ -1,0 +1,191 @@
+---
+title: "Time Series Analysis Project"
+subtitle: "Exploring electrical load profiles in Kosovo"
+author:
+- name: Toska Sadiku 
+date: "March 2024"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r, echo=FALSE}
+htmltools::img(src = knitr::image_uri("QMlogo.png"), 
+               alt = 'logo', 
+               style = 'position:absolute; top:0; right:0; padding:10px; width:30%;')
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1. Introduction <a id="section-1"></a>
+
+In this project I will be exploring the electricity load profiles throughout 2023 in Kosovo. The purpose of this is to look at the demands, and see how this changes over the year. I would then like to compare this to 20 years ago, when the country was still just coming out of a critical period in its history. I would like to see the differences, and then also compare this with actual supply.
+
+### 1.1 What are electrical load profiles?
+
+Electricity load profiles are detailed records of electricity consumption patterns over time, typically broken down into intervals such as hourly or 15-minute increments. These profiles depict the varying levels of power demand exhibited by consumers, businesses, or entire regions.
+
+At a technical level, load profiles are constructed by measuring the power consumption at regular intervals and then plotting these measurements on a graph over a defined time period. This graph visually represents the load or demand for electricity, showing peaks and troughs corresponding to periods of high and low consumption, respectively.
+
+Load profiles are crucial for understanding the dynamics of electricity demand and for effective grid management. They provide essential data for utilities and grid operators to forecast future demand, optimize generation and distribution resources, plan infrastructure upgrades, and implement demand-side management strategies.
+
+#####Some influences that will be considered:
+1. Residential load profiles: Load profiles vary based on the time of day, particularly because there is a peak when people return home and engage in activities that require electricity.
+2. Weather conditions: This will impact electricity consumption due to heating and cooling demands during temperature changes throughout the year.
+3. Industrial processes: Maybe there is less consumption over the weekend, out of hours.
+
+### 1.2 Why look at this?
+
+There is a personal element in this for me, as it is one of the places I am from, and in my summers spent there experienced "black-outs" when cities and towns could not cope with tourist demands (according to my mother). This is a common occurrence to this day, and also occurs in many other areas in that region of the world (that I am also from), such as Albania and Montenegro. 
+
+I did attempt to find power outage data, but for *some* ~~political~~ reason that seems to be a little difficult for me to find at the moment. So I have decided to just stick to load profiles for now, which are still an interesting way to look at it. 
+
+###### May I direct you to some interesting media:
+1. [Working without electricity: Kosovo’s great experiment](https://www.welcometothejungle.com/en/articles/working-without-electricity-kosovo-great-experiment)
+2. [A Corner of Europe Starts Living With Blackouts Again](https://www.bloomberg.com/news/articles/2022-08-26/europe-energy-crisis-kosovo-learns-to-live-with-rolling-power-blackouts-again)
+3. [An EBRD report](https://www.google.com/url?sa=t&rct=j&q=&esrc=s&source=web&cd=&ved=2ahUKEwjCj4ae_PyEAxXSSEEAHQVZB3gQFnoECCgQAQ&url=https%3A%2F%2Fwww.ebrd.com%2Fpublications%2Ftransition-report-202223-kosovo&usg=AOvVaw1vPKq8fRXUSVIgRM3M7AjU&opi=89978449)
+
+*These power supply outages also coincide with water supply outages. When electricity goes out, water goes out. When water goes out, sometimes electricity does not. There definitely is an operational connection there. It would be interesting to examine the correlation and see whether there are any "phased effects" - for example, many people anticipate water outages, and so fill bottles with water. I wonder about the cause-and-effect. I wonder if we can see this reflected in weekly seasonalities during tourism season?*
+
+But for now, for the purposes of just-about-timely submission, like I said, I will extract various components in the electrical load profiles of Kosovo, for the year 2023.
+
+## 2. Set Up <a id="section-2"></a>
+### 2.1 Data Collection
+
+The data was acquired from ENTSO-E Transparency, the central data platform of the European transmission system operators, at [Power Statistics (entsoe.eu)](https://www.entsoe.eu/data/power-stats/). They provide a lot of data as required by [EU regulation 543/2013](http://eur-lex.europa.eu/LexUriServ/LexUriServ.do?uri=OJ:L:2013:163:0001:0012:EN:PDF). It is horrible to navigate their websites, I do not recommend it, just go to those links.
+
+This was a csv file containing hourly (one reading for every hour of the day) load profiles for the year of 2023, across many countries. I believe the unit of "Value" is Mega Watts - across many of ENTSO-E's various data portals and relevant documentation they appear to keep this a consistent unit of measurement.
+
+This data was reformatted to only include the data for Kosovo, and the fields “DateUTC” (including hourly timestamp) and “Value”. We import this csv file into RStudio and store it in a dataframe. Here is a view of the dataframe using `head()` and `tail()` where you can clearly see that there is a power value for each hourly time stamp for the whole year. 
+
+```{r eval=TRUE, include=TRUE}
+loadProfile.df <- read.csv("Hourly_Load_Profiles.csv", header=TRUE, stringsAsFactors=FALSE)
+
+head(loadProfile.df)
+tail(loadProfile.df)
+```
+
+For the rest of this project I will often print the `head()` and `tail()` (as shown above) of our data here so the viewer understands how it looks at every stage.
+
+### 2.2 Formatting and cleaning the data
+
+We will be using the prophet forecasting system in our analysis, which has a few requirements regarding the format of our data. This includes column names and date formatting. This is necessary so that we can feed our data into the models. 
+
+```{r eval=TRUE, include=TRUE}
+# Column names changed to ds for the date, and y for the values
+names(loadProfile.df) <- c("ds", "y")
+# Convert ds column to POSIXct and then to desired date format
+loadProfile.df$ds <- strptime(loadProfile.df$ds, format = "%d/%m/%Y %H:%M")
+loadProfile.df$ds <- format(loadProfile.df$ds, "%Y-%m-%d %H:%M:%S")
+```
+
+And here's our nicely formatted data:
+
+```{r echo=FALSE}
+head(loadProfile.df)
+tail(loadProfile.df)
+```
+Now we're ready to make some prophecies! Bwahahaha!
+
+### 2.3 Brief discussion on Prophet
+
+We will be using Prophet, which is an "additive regression model with four main components:
+1. A piecewise linear or logistic growth curve trend.
+2. A yearly seasonal component modeled using Fourier series.
+3. A weekly seasonal component using dummy variables.
+4. A user-provided list of important holidays."
+*(Straight from the [horse's mouth](https://research.facebook.com/blog/2017/2/prophet-forecasting-at-scale/))*
+
+It makes it much more straightforward to create a reasonable, accurate forecast. We will use the package to incorporate various forecasting techniques (like ARIMA and exponential smoothing). Prophet shines where we use data that has hourly/daily/weekly observations, with at least around a year of data. That is what we have collected here!
+
+We will leverage its strengths by taking a look at whether holidays (in Kosovo, this would be majority muslim holidays, as well as international ones like New Year) to see how that affects load profiles. 
+
+One great thing is that Prophet provides uncertainty intervals for the trend component by default. So we will model uncertainty about future seasonality and holiday effects by running some HMC iterations to include those estimates.
+
+There is of course the matter of installing the required libraries and such. We did as Meta suggests, using `install.packages("remotes")` and then `remotes::install_github('facebook/prophet@*release', subdir='R')`.   
+
+## 3. Initial forecasting model<a id="section-3"></a>
+
+So we can now get into the nitty gritty stuff. We can execute some pretty simple and useful commands from the prophet library, to set up a forecast. 
+
+### 3.1 Fitting the model and creating predictions and other data
+
+First we use the prophet() function to create the Prophet object and fit the model to our loadProfile.df dataframe.
+
+```{r echo=TRUE, message=FALSE}
+# Fit the model by calling the prophet function 
+prophetModel <- prophet::prophet(loadProfile.df)
+
+```
+
+Our predictions will be made on a data frame, which we create by extending the current one we have. We use the helper method `make_future_dataframe()`, which adds forecasts to the original dataframe so we can evaluate in-sample fit. We specify periods=365 to predict another year .
+
+
+```{r eval=TRUE, include=TRUE}
+future.df = prophet::make_future_dataframe(
+  prophetModel, periods=365)
+```
+
+```{r echo=FALSE}
+head(future.df) # this will show original loadProfile.df
+tail(future.df) # this will show end of appended rows
+```
+
+You can see that our original dates are at the beginning, and the new dates to be predicted are at the end.
+
+Next, we use the `predict()` method, which assigns each row in our future.df a predicted value, in a column named yhat. (I find this adorable given the hat on a variable name means we are working with predictions in some textbooks I've looked at.)
+
+```{r eval=TRUE, include=TRUE}
+forecast.df <- predict(prophetModel, future.df)
+```
+
+At this point, the data frame is a little messy. We can extract columns as needed for our plots. Here are the fields of data generated in our `forecast.df`:
+
+```{r echo=FALSE}
+print(colnames(forecast.df))
+```
+
+With `yhat` being our prediction, and other columns indicating uncertainty intervals and seasonality. This is our forecast dataframe complete!
+
+### 3.2 Plotting our predictions and analysing results
+
+Here we have an interactive plot, in which you can view the data and adjust the time periods yourself to take a closer peek at smaller periods. The data is very dense, so this will definitely help view things.
+
+```{r eval=TRUE, include=TRUE}
+prophet::dyplot.prophet(prophetModel,forecast.df)
+
+```
+
+We break down the forecast into daily and weekly seasonality and trend below:
+
+```{r eval=TRUE, include=TRUE}
+
+prophet::prophet_plot_components(prophetModel,forecast.df)
+```
+
+These results are not particularly out of the ordinary. 
+
+We see the trend, and the predicted values. The light blue region portrays uncertainty in the forecast, which is indicative of potential for future trend changes. Prophet predicts an increase in change, but nothing major. 
+
+It makes sense that electricity consumption is at its lowest on Fridays and the weekend, when people are not at work, and are more likely to be out than at home.
+
+Similarly in daily consumption, it suggests typical daily patterns of energy consumption, with lower demand during nighttime hours, increased activity during the morning and afternoon, and a plateau in demand during the evening.
+
+## 4. Next Steps<a id="section-4"></a>
+
+It's a shame I didn't have the time to explore more prior to the coursework submission deadline. I will definitely be pestering Dr Rollin with some moe questions.
+
+My Next steps:
+1. Download more load profile data from last twenty years (not sure if my laptop will crash though...)
+2. Find power outage data, water supply data, tourist arrival data, weather data, economic indicators
+3. Apply various methods we have learnt in our module, like Box-Cox or Log transformations and the Breusch-Pagan Test. Use this to determine whether I should consider alternative modeling approaches/transformations (given significance of heterscedasticity)
+4. Conduct EDA
+5. Separate out noise and yearly seasonality
+6. Fit ARIMA
+7. Explore ML - random forests
+8. Cross-validation
+9. Residual analysis
+10. Consult Dr Rollin
